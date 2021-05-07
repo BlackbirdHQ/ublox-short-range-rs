@@ -6,9 +6,11 @@ use crate::{
         network::{WifiMode, WifiNetwork},
         options::{ConnectionOptions, HotspotOptions},
     },
+    socket::Socket,
 };
 use atat::serde_at::CharVec;
 use atat::AtatClient;
+use embedded_time::Clock;
 
 use heapless::{consts, ArrayLength};
 
@@ -26,10 +28,11 @@ pub trait WifiHotspot {
     fn stop_hotspot(&mut self) -> Result<bool, WifiHotspotError>;
 }
 
-impl<T, N, L> WifiHotspot for UbloxClient<T, N, L>
+impl<C, CLK, N, L> WifiHotspot for UbloxClient<C, CLK, N, L>
 where
-    T: AtatClient,
-    N: ArrayLength<Option<crate::sockets::SocketSetItem<L>>>,
+    C: AtatClient,
+    CLK: Clock,
+    N: ArrayLength<Option<Socket<L, CLK>>>,
     L: ArrayLength<u8>,
 {
     /// Creates wireless hotspot service for host machine.

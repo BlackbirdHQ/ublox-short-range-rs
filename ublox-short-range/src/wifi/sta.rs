@@ -11,9 +11,11 @@ use crate::{
         network::{WifiMode, WifiNetwork},
         options::ConnectionOptions,
     },
+    socket::Socket,
 };
 use atat::serde_at::CharVec;
 use atat::AtatClient;
+use embedded_time::Clock;
 
 // use core::convert::TryFrom;
 use core::convert::TryFrom;
@@ -31,10 +33,11 @@ pub trait WifiConnectivity {
     fn disconnect(&self) -> Result<(), WifiConnectionError>;
 }
 
-impl<T, N, L> WifiConnectivity for UbloxClient<T, N, L>
+impl<C, CLK, N, L> WifiConnectivity for UbloxClient<C, CLK, N, L>
 where
-    T: AtatClient,
-    N: ArrayLength<Option<crate::sockets::SocketSetItem<L>>>,
+    C: AtatClient,
+    CLK: Clock,
+    N: ArrayLength<Option<Socket<L, CLK>>>,
     L: ArrayLength<u8>,
 {
     /// Attempts to connect to a wireless network with the given connection options.

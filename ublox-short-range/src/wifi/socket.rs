@@ -8,12 +8,13 @@ pub use no_std_net::{Ipv4Addr, Ipv6Addr};
 // use serde::{Serialize};
 use atat::serde_at::{to_string, SerializeOptions};
 use typenum::marker_traits::Unsigned;
+use embedded_time::Clock;
 
 use crate::{
     command::data_mode::*,
     command::edm::{EdmAtCmdWrapper, EdmDataCommand},
     error::Error,
-    socket::{ChannelId, SocketHandle, SocketType},
+    socket::{ChannelId, SocketHandle, SocketType, Socket},
     UbloxClient,
 };
 
@@ -30,10 +31,11 @@ use embedded_nal::TcpClient;
 pub type IngressChunkSize = consts::U256;
 pub type EgressChunkSize = consts::U512;
 
-impl<C, N, L> UbloxClient<C, N, L>
+impl<C, CLK, N, L> UbloxClient<C, CLK, N, L>
 where
     C: atat::AtatClient,
-    N: ArrayLength<Option<crate::sockets::SocketSetItem<L>>>,
+    CLK: Clock,
+    N: ArrayLength<Option<Socket<L, CLK>>>,
     L: ArrayLength<u8>,
 {
     pub(crate) fn handle_socket_error<A: atat::AtatResp, F: Fn() -> Result<A, Error>>(
@@ -113,10 +115,11 @@ where
 }
 
 #[cfg(feature = "socket-udp")]
-impl<C, N, L> UdpClient for UbloxClient<C, N, L>
+impl<C, CLK, N, L> UdpClient for UbloxClient<C, CLK, N, L>
 where
     C: atat::AtatClient,
-    N: ArrayLength<Option<crate::sockets::SocketSetItem<L>>>,
+    CLK: Clock,
+    N: ArrayLength<Option<Socket<L, CLK>>>,
     L: ArrayLength<u8>,
 {
     type Error = Error;
@@ -305,7 +308,7 @@ where
 
     /// Close an existing UDP socket.
     fn close(&self, socket: Self::UdpSocket) -> Result<(), Self::Error> {
-        defmt::debug!("[UDP] Closelosing socket: {:?}", socket.0);
+        defmt::debug!("[UDP] Closing socket: {:?}", socket.0);
         let mut sockets = self.sockets.try_borrow_mut()?;
         //If no sockets excists, nothing to close.
         if let Some(ref mut udp) = sockets.get::<UdpSocket<_>>(socket).ok() {
@@ -326,10 +329,11 @@ where
 }
 
 #[cfg(feature = "socket-tcp")]
-impl<C, N, L> TcpClient for UbloxClient<C, N, L>
+impl<C, CLK, N, L> TcpClient for UbloxClient<C, CLK, N, L>
 where
     C: atat::AtatClient,
-    N: ArrayLength<Option<crate::sockets::SocketSetItem<L>>>,
+    CLK: Clock,
+    N: ArrayLength<Option<Socket<L, CLK>>>,
     L: ArrayLength<u8>,
 {
     type Error = Error;

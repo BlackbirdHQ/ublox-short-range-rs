@@ -1,9 +1,12 @@
 use core::cmp::min;
+use core::convert::TryInto;
 
 use heapless::ArrayLength;
 
 use super::{ChannelId, Error, Result, RingBuffer, Socket, SocketHandle, SocketMeta};
 pub use embedded_nal::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use embedded_time::{duration::*, Clock, Instant};
+
 
 /// A UDP socket ring buffer.
 pub type SocketBuffer<N> = RingBuffer<u8, N>;
@@ -24,25 +27,33 @@ impl Default for State {
 ///
 /// A UDP socket is bound to a specific endpoint, and owns transmit and receive
 /// packet buffers.
-pub struct UdpSocket<L: ArrayLength<u8>> {
+pub struct UdpSocket<L: ArrayLength<u8>, CLK: Clock> {
     pub(crate) meta: SocketMeta,
     pub(crate) endpoint: SocketAddr,
-    _available_data: usize,
     state: State,
+    check_interval: Seconds<u32>,
+    read_timeout: Option<Seconds<u32>>,
+    available_data: usize,
     rx_buffer: SocketBuffer<L>,
+    last_check_time: Option<Instant<CLK>>,
+    closed_time: Option<Instant<CLK>>,
 }
 
-impl<L: ArrayLength<u8>> UdpSocket<L> {
+impl<L: ArrayLength<u8>, CLK: Clock> UdpSocket<L, CLK> {
     /// Create an UDP socket with the given buffers.
-    pub fn new(socket_id: usize) -> UdpSocket<L> {
+    pub fn new(socket_id: u8) -> UdpSocket<L, CLK> {
         let mut meta = SocketMeta::default();
         meta.handle.0 = socket_id;
         UdpSocket {
             meta,
-            endpoint: SocketAddrV4::new(Ipv4Addr::unspecified(), 0).into(),
             state: State::Closed,
-            _available_data: 0,
+            check_interval: Seconds(15),
+            read_timeout: Some(Seconds(15)),
+            endpoint: SocketAddrV4::new(Ipv4Addr::unspecified(), 0).into(),
+            available_data: 0,
             rx_buffer: SocketBuffer::new(),
+            last_check_time: None,
+            closed_time: None,
         }
     }
 
@@ -52,16 +63,58 @@ impl<L: ArrayLength<u8>> UdpSocket<L> {
         self.meta.handle
     }
 
-    /// Return the socket channel id.
-    #[inline]
-    pub fn channel_id(&self) -> ChannelId {
-        self.meta.channel_id
-    }
-
     /// Return the bound endpoint.
     #[inline]
     pub fn endpoint(&self) -> SocketAddr {
         self.endpoint
+    }
+
+    pub fn should_update_available_data(&mut self, ts: Instant<CLK>) -> bool
+    where
+        Generic<CLK::T>: TryInto<Milliseconds>,
+    {
+        self.last_check_time
+            .replace(ts)
+            .and_then(|ref last_check_time| ts.checked_duration_since(last_check_time))
+            .and_then(|dur| dur.try_into().ok())
+            .map(|dur: Milliseconds<u32>| dur >= self.check_interval)
+            .unwrap_or(false)
+    }
+
+    pub fn recycle(&self, ts: &Instant<CLK>) -> bool
+    where
+        Generic<CLK::T>: TryInto<Milliseconds>,
+    {
+        if let Some(read_timeout) = self.read_timeout {
+            self.closed_time
+                .and_then(|ref closed_time| ts.checked_duration_since(closed_time))
+                .and_then(|dur| dur.try_into().ok())
+                .map(|dur: Milliseconds<u32>| dur >= read_timeout)
+                .unwrap_or(false)
+        } else {
+            false
+        }
+    }
+
+    pub fn closed_by_remote(&mut self, ts: Instant<CLK>)
+    where
+        Generic<CLK::T>: TryInto<Milliseconds>,
+    {
+        self.closed_time.replace(ts);
+    }
+
+    /// Set available data.
+    pub fn set_available_data(&mut self, available_data: usize) {
+        self.available_data = available_data;
+    }
+
+    /// Get the number of bytes available to ingress.
+    pub fn get_available_data(&self) -> usize {
+        self.available_data
+    }
+
+    pub fn rx_window(&self) -> usize {
+        self.rx_buffer.window()
     }
 
     /// Return the connection state, in terms of the UDP connection.
@@ -70,9 +123,6 @@ impl<L: ArrayLength<u8>> UdpSocket<L> {
         self.state
     }
 
-    pub fn set_state(&mut self, state: State) {
-        self.state = state
-    }
     /// Bind the socket to the given endpoint.
     ///
     /// This function returns `Err(Error::Illegal)` if the socket was open
@@ -200,8 +250,8 @@ impl<L: ArrayLength<u8>> UdpSocket<L> {
     }
 }
 
-impl<L: ArrayLength<u8>> Into<Socket<L>> for UdpSocket<L> {
-    fn into(self) -> Socket<L> {
+impl<L: ArrayLength<u8>, CLK: Clock> Into<Socket<L, CLK>> for UdpSocket<L, CLK> {
+    fn into(self) -> Socket<L, CLK> {
         Socket::Udp(self)
     }
 }

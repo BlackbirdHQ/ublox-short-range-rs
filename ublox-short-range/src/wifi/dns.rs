@@ -1,4 +1,5 @@
 use crate::client::DNSState;
+use embedded_time::Clock;
 use embedded_nal::{AddrType, Dns};
 use heapless::{consts, ArrayLength, String};
 use no_std_net::IpAddr;
@@ -8,12 +9,14 @@ use crate::{
     // command::dns::{self, types::ResolutionType},
     error::Error,
     UbloxClient,
+    socket::Socket,
 };
 
-impl<C, N, L> Dns for UbloxClient<C, N, L>
+impl<C, CLK, N, L> Dns for UbloxClient<C, CLK, N, L>
 where
     C: atat::AtatClient,
-    N: ArrayLength<Option<crate::sockets::SocketSetItem<L>>>,
+    CLK: Clock,
+    N: ArrayLength<Option<Socket<L, CLK>>>,
     L: ArrayLength<u8>,
 {
     type Error = Error;

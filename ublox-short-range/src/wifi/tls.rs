@@ -2,10 +2,11 @@ use crate::{
     client::SecurityCredentials,
     command::security::{types::*, *},
     error::Error,
-    socket::SocketHandle,
+    socket::{SocketHandle, Socket},
     UbloxClient,
 };
 use heapless::{ArrayLength, String};
+use embedded_time::Clock;
 
 pub trait TLS {
     fn import_certificate(&mut self, name: &str, certificate: &[u8]) -> Result<(), Error>;
@@ -25,10 +26,11 @@ pub trait TLS {
     ) -> Result<(), Error>;
 }
 
-impl<C, N, L> TLS for UbloxClient<C, N, L>
+impl<C, CLK, N, L> TLS for UbloxClient<C, CLK, N, L>
 where
     C: atat::AtatClient,
-    N: ArrayLength<Option<crate::sockets::SocketSetItem<L>>>,
+    CLK: Clock,
+    N: ArrayLength<Option<Socket<L, CLK>>>,
     L: ArrayLength<u8>,
 {
     /// Importing credentials enabeles their use for all further TCP connections

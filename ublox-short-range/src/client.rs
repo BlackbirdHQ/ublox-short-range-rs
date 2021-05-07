@@ -10,12 +10,13 @@ use crate::{
         Urc,
     },
     error::Error,
-    socket::{ChannelId, SocketHandle, SocketType, TcpSocket, TcpState, UdpSocket, UdpState},
+    socket::{ChannelId, SocketHandle, SocketType, TcpSocket, TcpState, UdpSocket, UdpState, Socket},
     sockets::SocketSet,
     wifi::connection::{NetworkState, WiFiState, WifiConnection},
 };
 use core::cell::{Cell, RefCell};
 use embedded_nal::{IpAddr, SocketAddr};
+use embedded_time::Clock;
 use heapless::{consts, ArrayLength};
 
 #[macro_export]
@@ -61,30 +62,32 @@ pub struct SecurityCredentials {
     pub c_key_name: Option<heapless::String<consts::U16>>,
 }
 
-pub struct UbloxClient<C, N, L>
+pub struct UbloxClient<C, CLK, N, L>
 where
     C: atat::AtatClient,
-    N: 'static + ArrayLength<Option<crate::sockets::SocketSetItem<L>>>,
+    CLK: 'static + Clock,
+    N: 'static + ArrayLength<Option<Socket<L, CLK>>>,
     L: 'static + ArrayLength<u8>,
 {
     pub(crate) initialized: Cell<bool>,
     serial_mode: Cell<SerialMode>,
     pub(crate) wifi_connection: RefCell<Option<WifiConnection>>,
     pub(crate) client: RefCell<C>,
-    pub(crate) sockets: RefCell<&'static mut SocketSet<N, L>>,
+    pub(crate) sockets: RefCell<&'static mut SocketSet<N, L, CLK>>,
     pub(crate) dns_state: Cell<DNSState>,
     pub(crate) urc_attempts: Cell<u8>,
     pub(crate) max_urc_attempts: u8,
     pub(crate) security_credentials: Option<SecurityCredentials>,
 }
 
-impl<C, N, L> UbloxClient<C, N, L>
+impl<C, CLK, N, L> UbloxClient<C, CLK, N, L>
 where
     C: atat::AtatClient,
-    N: ArrayLength<Option<crate::sockets::SocketSetItem<L>>>,
+    CLK: Clock,
+    N: ArrayLength<Option<Socket<L, CLK>>>,
     L: ArrayLength<u8>,
 {
-    pub fn new(client: C, socket_set: &'static mut SocketSet<N, L>) -> Self {
+    pub fn new(client: C, socket_set: &'static mut SocketSet<N, L, CLK>) -> Self {
         UbloxClient {
             initialized: Cell::new(false),
             serial_mode: Cell::new(SerialMode::Cmd),

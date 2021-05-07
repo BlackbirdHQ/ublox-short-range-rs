@@ -5,9 +5,14 @@ mod set;
 pub mod tcp;
 pub mod udp;
 
+use core::convert::TryInto;
+
 pub(crate) use self::meta::Meta as SocketMeta;
 pub use self::ring_buffer::RingBuffer;
-use embedded_nal::SocketAddr;
+use embedded_time::{
+    duration::{Generic, Milliseconds},
+    Clock, Instant,
+};
 use heapless::ArrayLength;
 
 #[cfg(feature = "socket-tcp")]
@@ -15,10 +20,9 @@ pub use tcp::{State as TcpState, TcpSocket};
 #[cfg(feature = "socket-udp")]
 pub use udp::{State as UdpState, UdpSocket};
 
-pub use self::set::{ChannelId, Handle as SocketHandle, Item as SocketSetItem, Set as SocketSet};
-
+pub use self::set::{ChannelId, Handle as SocketHandle, Set as SocketSet};
+pub use embedded_nal::SocketAddr;
 pub use self::ref_::Ref as SocketRef;
-pub(crate) use self::ref_::Session as SocketSession;
 
 /// The error type for the networking stack.
 #[non_exhaustive]
@@ -35,6 +39,7 @@ pub enum Error {
 
     SocketSetFull,
     InvalidSocket,
+    DuplicateSocket,
 }
 
 type Result<T> = core::result::Result<T, Error>;
@@ -50,7 +55,7 @@ type Result<T> = core::result::Result<T, Error>;
 /// [AnySocket]: trait.AnySocket.html
 /// [SocketSet::get]: struct.SocketSet.html#method.get
 #[non_exhaustive]
-pub enum Socket<L: ArrayLength<u8>> {
+pub enum Socket<L: ArrayLength<u8>, CLK: Clock> {
     // #[cfg(feature = "socket-raw")]
     // Raw(RawSocket<'a, 'b>),
     // #[cfg(all(
@@ -59,113 +64,152 @@ pub enum Socket<L: ArrayLength<u8>> {
     // ))]
     // Icmp(IcmpSocket<'a, 'b>),
     #[cfg(feature = "socket-udp")]
-    Udp(UdpSocket<L>),
+    Udp(UdpSocket<L, CLK>),
     #[cfg(feature = "socket-tcp")]
-    Tcp(TcpSocket<L>),
+    Tcp(TcpSocket<L, CLK>),
 }
 
 #[non_exhaustive]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum SocketType {
     Udp,
     Tcp,
 }
 
-impl<L: ArrayLength<u8>> Socket<L> {
-    pub fn get_type(&self) -> SocketType {
-        match self {
-            Socket::Tcp(_) => SocketType::Tcp,
-            Socket::Udp(_) => SocketType::Udp,
-        }
-    }
-}
-
-macro_rules! dispatch_socket {
-    ($self_:expr, |$socket:ident| $code:expr) => {
-        dispatch_socket!(@inner $self_, |$socket| $code);
-    };
-    (mut $self_:expr, |$socket:ident| $code:expr) => {
-        dispatch_socket!(@inner mut $self_, |$socket| $code);
-    };
-    (@inner $( $mut_:ident )* $self_:expr, |$socket:ident| $code:expr) => {
-        match *$self_ {
-            // #[cfg(feature = "socket-raw")]
-            // Socket::Raw(ref $( $mut_ )* $socket) => $code,
-            // #[cfg(all(feature = "socket-icmp", any(feature = "proto-ipv4", feature = "proto-ipv6")))]
-            // Socket::Icmp(ref $( $mut_ )* $socket) => $code,
-            #[cfg(feature = "socket-udp")]
-            Socket::Udp(ref $( $mut_ )* $socket) => $code,
-            #[cfg(feature = "socket-tcp")]
-            Socket::Tcp(ref $( $mut_ )* $socket) => $code,
-        }
-    };
-}
-
-impl<L: ArrayLength<u8>> Socket<L> {
+impl<L: ArrayLength<u8>, CLK: Clock> Socket<L, CLK> {
     /// Return the socket handle.
     #[inline]
     pub fn handle(&self) -> SocketHandle {
         self.meta().handle
     }
 
-    /// Return the socket channel id.
+    /// Return the socket handle.
     #[inline]
     pub fn channel_id(&self) -> ChannelId {
         self.meta().channel_id
     }
 
+    /// Return the socket handle.
+    pub fn endpoint(&self) -> &SocketAddr {
+        match self {
+            // #[cfg(feature = "socket-raw")]
+            // Socket::Raw(ref $( $mut_ )* $socket) => $code,
+            // #[cfg(all(feature = "socket-icmp", any(feature = "proto-ipv4", feature = "proto-ipv6")))]
+            // Socket::Icmp(ref $( $mut_ )* $socket) => $code,
+            #[cfg(feature = "socket-udp")]
+            Socket::Udp(ref socket) => &socket.endpoint,
+            #[cfg(feature = "socket-tcp")]
+            Socket::Tcp(ref socket) => &socket.endpoint,
+        }
+    }
+
     pub(crate) fn meta(&self) -> &SocketMeta {
-        dispatch_socket!(self, |socket| &socket.meta)
+        match self {
+            // #[cfg(feature = "socket-raw")]
+            // Socket::Raw(ref $( $mut_ )* $socket) => $code,
+            // #[cfg(all(feature = "socket-icmp", any(feature = "proto-ipv4", feature = "proto-ipv6")))]
+            // Socket::Icmp(ref $( $mut_ )* $socket) => $code,
+            #[cfg(feature = "socket-udp")]
+            Socket::Udp(ref socket) => &socket.meta,
+            #[cfg(feature = "socket-tcp")]
+            Socket::Tcp(ref socket) => &socket.meta,
+        }
     }
 
-    pub(crate) fn endpoint(&self) -> &SocketAddr {
-        dispatch_socket!(self, |socket| &socket.endpoint)
+    pub fn get_type(&self) -> SocketType {
+        match self {
+            Socket::Tcp(_) => SocketType::Tcp,
+            Socket::Udp(_) => SocketType::Udp,
+        }
     }
 
-    // pub(crate) fn meta_mut(&mut self) -> &mut SocketMeta {
-    //     dispatch_socket!(mut self, |socket| &mut socket.meta)
-    // }
-}
+    pub fn should_update_available_data(&mut self, ts: Instant<CLK>) -> bool
+    where
+        Generic<CLK::T>: TryInto<Milliseconds>,
+    {
+        match self {
+            Socket::Tcp(s) => s.should_update_available_data(ts),
+            Socket::Udp(s) => s.should_update_available_data(ts),
+        }
+    }
 
-impl<L: ArrayLength<u8>> SocketSession for Socket<L> {
-    fn finish(&mut self) {
-        dispatch_socket!(mut self, |socket| socket.finish())
+    pub fn available_data(&self) -> usize {
+        match self {
+            Socket::Tcp(s) => s.get_available_data(),
+            Socket::Udp(s) => s.get_available_data(),
+        }
+    }
+
+    pub fn recycle(&self, ts: &Instant<CLK>) -> bool
+    where
+        Generic<CLK::T>: TryInto<Milliseconds>,
+    {
+        match self {
+            Socket::Tcp(s) => s.recycle(ts),
+            Socket::Udp(s) => s.recycle(ts),
+        }
+    }
+
+    pub fn closed_by_remote(&mut self, ts: Instant<CLK>)
+    where
+        Generic<CLK::T>: TryInto<Milliseconds>,
+    {
+        match self {
+            Socket::Tcp(s) => s.closed_by_remote(ts),
+            Socket::Udp(s) => s.closed_by_remote(ts),
+        }
+    }
+
+    pub fn set_available_data(&mut self, available_data: usize) {
+        match self {
+            Socket::Tcp(s) => s.set_available_data(available_data),
+            Socket::Udp(s) => s.set_available_data(available_data),
+        }
+    }
+
+    pub fn rx_enqueue_slice(&mut self, data: &[u8]) -> usize {
+        match self {
+            Socket::Tcp(s) => s.rx_enqueue_slice(data),
+            Socket::Udp(s) => s.rx_enqueue_slice(data),
+        }
+    }
+
+    pub fn rx_window(&self) -> usize {
+        match self {
+            Socket::Tcp(s) => s.rx_window(),
+            Socket::Udp(s) => s.rx_window(),
+        }
+    }
+
+    pub fn can_recv(&self) -> bool {
+        match self {
+            Socket::Tcp(s) => s.can_recv(),
+            Socket::Udp(s) => s.can_recv(),
+        }
     }
 }
 
 /// A conversion trait for network sockets.
-pub trait AnySocket<L: ArrayLength<u8>>: SocketSession + Sized {
-    fn downcast(socket_ref: SocketRef<'_, Socket<L>>) -> Result<SocketRef<'_, Self>>;
+pub trait AnySocket<L: ArrayLength<u8>, CLK: Clock>: Sized {
+    fn downcast(socket_ref: SocketRef<'_, Socket<L, CLK>>) -> Result<SocketRef<'_, Self>>;
 }
 
-/// A trait for setting a value to a known state.
-///
-/// In-place analog of Default.
-pub trait Resettable {
-    fn reset(&mut self);
-}
-
-macro_rules! from_socket {
-    ($socket:ty, $variant:ident) => {
-        impl<L: ArrayLength<u8>> AnySocket<L> for $socket {
-            fn downcast(ref_: SocketRef<'_, Socket<L>>) -> Result<SocketRef<'_, Self>> {
-                match SocketRef::into_inner(ref_) {
-                    Socket::$variant(ref mut socket) => Ok(SocketRef::new(socket)),
-                    _ => Err(Error::Illegal),
-                }
-            }
-        }
-    };
-}
-
-// #[cfg(feature = "socket-raw")]
-// from_socket!(RawSocket, Raw);
-// #[cfg(all(
-//     feature = "socket-icmp",
-//     any(feature = "proto-ipv4", feature = "proto-ipv6")
-// ))]
-// from_socket!(IcmpSocket, Icmp);
-#[cfg(feature = "socket-udp")]
-from_socket!(UdpSocket<L>, Udp);
 #[cfg(feature = "socket-tcp")]
-from_socket!(TcpSocket<L>, Tcp);
+impl<L: ArrayLength<u8>, CLK: Clock> AnySocket<L, CLK> for TcpSocket<L, CLK> {
+    fn downcast(ref_: SocketRef<'_, Socket<L, CLK>>) -> Result<SocketRef<'_, Self>> {
+        match SocketRef::into_inner(ref_) {
+            Socket::Tcp(ref mut socket) => Ok(SocketRef::new(socket)),
+            _ => Err(Error::Illegal),
+        }
+    }
+}
+
+#[cfg(feature = "socket-udp")]
+impl<L: ArrayLength<u8>, CLK: Clock> AnySocket<L, CLK> for UdpSocket<L, CLK> {
+    fn downcast(ref_: SocketRef<'_, Socket<L, CLK>>) -> Result<SocketRef<'_, Self>> {
+        match SocketRef::into_inner(ref_) {
+            Socket::Udp(ref mut socket) => Ok(SocketRef::new(socket)),
+            _ => Err(Error::Illegal),
+        }
+    }
+}
