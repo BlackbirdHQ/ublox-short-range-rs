@@ -8,7 +8,7 @@ use heapless::consts;
 #[derive(Debug, PartialEq, Clone, AtatResp)]
 pub struct PeerConnected {
     #[at_arg(position = 0)]
-    pub handle: usize,
+    pub handle: u8,
     #[at_arg(position = 1)]
     pub connection_type: ConnectionType,
     #[at_arg(position = 2)]
@@ -31,5 +31,5 @@ pub struct PeerConnected {
 #[derive(Debug, PartialEq, Clone, AtatResp)]
 pub struct PeerDisconnected {
     #[at_arg(position = 0)]
-    pub handle: usize,
+    pub handle: u8,
 }

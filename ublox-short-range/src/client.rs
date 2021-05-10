@@ -10,8 +10,7 @@ use crate::{
         Urc,
     },
     error::Error,
-    socket::{ChannelId, SocketHandle, SocketType, TcpSocket, TcpState, UdpSocket, UdpState, Socket},
-    sockets::SocketSet,
+    socket::{ChannelId, Socket, SocketType, TcpSocket, TcpState, UdpSocket, UdpState, SocketIndicator, SocketSet},
     wifi::connection::{NetworkState, WiFiState, WifiConnection},
 };
 use core::cell::{Cell, RefCell};
@@ -219,21 +218,21 @@ where
                             Urc::PeerDisconnected(msg) => {
                                 defmt::debug!("[URC] PeerDisconnected");
                                 if let Ok(ref mut sockets) = self.sockets.try_borrow_mut() {
-                                    let handle = SocketHandle(msg.handle);
-                                    match sockets.socket_type(handle) {
+                                    let indicator = SocketIndicator::Handle(msg.handle);
+                                    match sockets.socket_type(indicator) {
                                         Some(SocketType::Tcp) => {
-                                            if let Ok(mut tcp) = sockets.get::<TcpSocket<_>>(handle)
+                                            if let Ok(mut tcp) = sockets.get::<TcpSocket<_, _>>(indicator)
                                             {
                                                 tcp.close();
-                                                sockets.remove(handle).ok();
+                                                sockets.remove(indicator).ok();
                                             }
                                         }
                                         Some(SocketType::Udp) => {
-                                            if let Ok(mut udp) = sockets.get::<UdpSocket<_>>(handle)
+                                            if let Ok(mut udp) = sockets.get::<UdpSocket<_, _>>(indicator)
                                             {
                                                 udp.close();
                                             }
-                                            sockets.remove(handle).ok();
+                                            sockets.remove(indicator).ok();
                                         }
                                         None => {}
                                     }
@@ -365,13 +364,14 @@ where
                         if let Ok(mut sockets) = self.sockets.try_borrow_mut() {
                             let endpoint =
                                 SocketAddr::new(IpAddr::V4(event.remote_ip), event.remote_port);
-                            match sockets.socket_type_by_endpoint(&endpoint) {
+                            let indicator = SocketIndicator::Endpoint(&endpoint);
+                            match sockets.socket_type(indicator) {
                                 Some(SocketType::Tcp) => {
                                     if let Ok(mut tcp) =
-                                        sockets.get_by_endpoint::<TcpSocket<_>>(&endpoint)
+                                        sockets.get::<TcpSocket<_, _>>(indicator)
                                     {
                                         tcp.meta.channel_id.0 = event.channel_id;
-                                        tcp.set_state(TcpState::Established);
+                                        tcp.set_state(TcpState::Connected);
                                         true
                                     } else {
                                         defmt::debug!("[EDM_URC] Socket not found!");
@@ -380,7 +380,7 @@ where
                                 }
                                 Some(SocketType::Udp) => {
                                     if let Ok(mut udp) =
-                                        sockets.get_by_endpoint::<UdpSocket<_>>(&endpoint)
+                                        sockets.get::<UdpSocket<_, _>>(indicator)
                                     {
                                         udp.meta.channel_id.0 = event.channel_id;
                                         udp.set_state(UdpState::Established);
@@ -408,13 +408,14 @@ where
                         if let Ok(mut sockets) = self.sockets.try_borrow_mut() {
                             let endpoint =
                                 SocketAddr::new(IpAddr::V6(event.remote_ip), event.remote_port);
-                            match sockets.socket_type_by_endpoint(&endpoint) {
+                            let indicator = SocketIndicator::Endpoint(&endpoint);
+                            match sockets.socket_type(indicator) {
                                 Some(SocketType::Tcp) => {
                                     if let Ok(mut tcp) =
-                                        sockets.get_by_endpoint::<TcpSocket<_>>(&endpoint)
+                                        sockets.get::<TcpSocket<_, _>>(indicator)
                                     {
                                         tcp.meta.channel_id.0 = event.channel_id;
-                                        tcp.set_state(TcpState::Established);
+                                        tcp.set_state(TcpState::Connected);
                                         true
                                     } else {
                                         false
@@ -422,7 +423,7 @@ where
                                 }
                                 Some(SocketType::Udp) => {
                                     if let Ok(mut udp) =
-                                        sockets.get_by_endpoint::<UdpSocket<_>>(&endpoint)
+                                        sockets.get::<UdpSocket<_, _>>(indicator)
                                     {
                                         udp.meta.channel_id.0 = event.channel_id;
                                         udp.set_state(UdpState::Established);

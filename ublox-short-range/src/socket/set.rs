@@ -45,14 +45,37 @@ pub struct ChannelId(pub u8);
     Copy,
     PartialEq,
     Eq,
-    Serialize,
-    Deserialize,
-    defmt::Format,
 )]
-pub enum SocketIndicator{
+pub enum SocketIndicator<'a>{
     Handle(u8),
     ChannelId(u8),
-    Endpoint(SocketAddr)
+    Endpoint(&'a SocketAddr)
+}
+
+impl <'a> defmt::Format for SocketIndicator<'a> {
+    fn format(&self, fmt: defmt::Formatter) {
+        match self {
+            SocketIndicator::Handle(n) => defmt::write!(
+                fmt,
+                "Handle({})",
+                n,
+             ),
+            SocketIndicator::ChannelId(n) => defmt::write!(
+                fmt,
+                "ChannelId({})",
+                n,
+             ),
+            SocketIndicator::Endpoint(e) => match e {
+                SocketAddr::V4(v4) => defmt::write!(
+                    fmt,
+                    "Endpoint({}:{})",
+                    <u32>::from(*v4.ip()), v4.port()
+                 ) 
+            } ,
+
+        };
+        
+    }
 }
 
 /// An extensible set of sockets.
@@ -118,7 +141,7 @@ where
 
         defmt::error!("Adding socket! {} {}", handle.0, socket.get_type());
 
-        if self.index_of(handle).is_ok() {
+        if self.index_of(SocketIndicator::Handle(handle.0)).is_ok() {
             return Err(Error::DuplicateSocket);
         }
 
@@ -151,7 +174,7 @@ where
                         match indicator {
                             SocketIndicator::ChannelId(id) => s.channel_id().0 == id,
                             SocketIndicator::Handle(handle) => s.handle().0 == handle,
-                            SocketIndicator::Endpoint(add) => *s.endpoint() == add,
+                            SocketIndicator::Endpoint(add) => *s.endpoint() == *add,
                     })
                     .unwrap_or(false)
             })
@@ -195,7 +218,7 @@ where
         if h.is_none() {
             return false;
         }
-        self.remove(h.unwrap()).is_ok()
+        self.remove(SocketIndicator::Handle(h.unwrap().0)).is_ok()
     }
 
     /// Iterate every socket in this set.
@@ -306,7 +329,7 @@ mod tests {
 
         assert!(set.get::<TcpSocket<_, _>>(SocketIndicator::Handle(1)).is_err());
 
-        set.get::<UdpSocket<_, _>>(Handle(1))
+        set.get::<UdpSocket<_, _>>(SocketIndicator::Handle(1))
             .expect("failed to get udp socket");
     }
 
@@ -337,7 +360,7 @@ mod tests {
 
         assert!(set.get::<TcpSocket<_, _>>(SocketIndicator::Handle(0)).is_err());
 
-        set.get::<UdpSocket<_, _>>(SocketIndicator::Handle(Handle(1)))
+        set.get::<UdpSocket<_, _>>(SocketIndicator::Handle(1))
             .expect("failed to get udp socket");
 
         assert_eq!(set.add(TcpSocket::new(0)), Ok(Handle(0)));
@@ -356,7 +379,7 @@ mod tests {
         assert_eq!(set.add(UdpSocket::new(1)), Ok(Handle(1)));
         assert_eq!(set.len(), 2);
 
-        set.get::<TcpSocket<_, _>>(SocketIndicator::Handle(Handle(0)))
+        set.get::<TcpSocket<_, _>>(SocketIndicator::Handle(0))
             .expect("failed to get tcp socket");
 
         set.prune();

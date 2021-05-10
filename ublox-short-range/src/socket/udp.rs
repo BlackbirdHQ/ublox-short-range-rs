@@ -63,10 +63,26 @@ impl<L: ArrayLength<u8>, CLK: Clock> UdpSocket<L, CLK> {
         self.meta.handle
     }
 
+    /// Return the socket channel id.
+    #[inline]
+    pub fn channel_id(&self) -> ChannelId {
+        self.meta.channel_id
+    }
+
     /// Return the bound endpoint.
     #[inline]
     pub fn endpoint(&self) -> SocketAddr {
         self.endpoint
+    }
+
+    /// Return the connection state, in terms of the UDP connection.
+    #[inline]
+    pub fn state(&self) -> State {
+        self.state
+    }
+
+    pub fn set_state(&mut self, state: State) {
+        self.state = state
     }
 
     pub fn should_update_available_data(&mut self, ts: Instant<CLK>) -> bool
@@ -115,12 +131,6 @@ impl<L: ArrayLength<u8>, CLK: Clock> UdpSocket<L, CLK> {
 
     pub fn rx_window(&self) -> usize {
         self.rx_buffer.window()
-    }
-
-    /// Return the connection state, in terms of the UDP connection.
-    #[inline]
-    pub fn state(&self) -> State {
-        self.state
     }
 
     /// Bind the socket to the given endpoint.

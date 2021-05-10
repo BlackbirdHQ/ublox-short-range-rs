@@ -20,7 +20,7 @@ pub use tcp::{State as TcpState, TcpSocket};
 #[cfg(feature = "socket-udp")]
 pub use udp::{State as UdpState, UdpSocket};
 
-pub use self::set::{ChannelId, Handle as SocketHandle, Set as SocketSet};
+pub use self::set::{ChannelId, Handle as SocketHandle, Set as SocketSet, SocketIndicator};
 pub use embedded_nal::SocketAddr;
 pub use self::ref_::Ref as SocketRef;
 
