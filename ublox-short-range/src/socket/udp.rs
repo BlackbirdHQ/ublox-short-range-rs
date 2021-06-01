@@ -256,7 +256,7 @@ impl<L: ArrayLength<u8>, CLK: Clock> UdpSocket<L, CLK> {
     }
 
     pub fn close(&mut self) {
-        self.endpoint.set_port(0);
+        self.set_state(State::Closed);
     }
 }
 

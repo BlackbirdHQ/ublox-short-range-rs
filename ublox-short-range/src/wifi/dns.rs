@@ -1,8 +1,9 @@
 use crate::client::DNSState;
-use embedded_time::Clock;
 use embedded_nal::{AddrType, Dns};
 use heapless::{consts, ArrayLength, String};
 use no_std_net::IpAddr;
+use core::convert::TryInto;
+use embedded_time::{duration::{units::Milliseconds, Generic}, Clock};
 
 use crate::{
     command::ping::*,
@@ -18,6 +19,7 @@ where
     CLK: Clock,
     N: ArrayLength<Option<Socket<L, CLK>>>,
     L: ArrayLength<u8>,
+    Generic<CLK::T>: TryInto<Milliseconds>,
 {
     type Error = Error;
 

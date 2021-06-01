@@ -6,7 +6,8 @@ use crate::{
     UbloxClient,
 };
 use heapless::{ArrayLength, String};
-use embedded_time::Clock;
+use core::convert::TryInto;
+use embedded_time::{duration::{units::Milliseconds, Generic}, Clock};
 
 pub trait TLS {
     fn import_certificate(&mut self, name: &str, certificate: &[u8]) -> Result<(), Error>;
@@ -32,6 +33,7 @@ where
     CLK: Clock,
     N: ArrayLength<Option<Socket<L, CLK>>>,
     L: ArrayLength<u8>,
+    Generic<CLK::T>: TryInto<Milliseconds>,
 {
     /// Importing credentials enabeles their use for all further TCP connections
     fn import_certificate(&mut self, name: &str, certificate: &[u8]) -> Result<(), Error> {

@@ -8,7 +8,8 @@ pub use no_std_net::{Ipv4Addr, Ipv6Addr};
 // use serde::{Serialize};
 use atat::serde_at::{to_string, SerializeOptions};
 use typenum::marker_traits::Unsigned;
-use embedded_time::Clock;
+use core::convert::TryInto;
+use embedded_time::{duration::{units::Milliseconds, Generic}, Clock};
 
 use crate::{
     command::data_mode::*,
@@ -37,6 +38,7 @@ where
     CLK: Clock,
     N: ArrayLength<Option<Socket<L, CLK>>>,
     L: ArrayLength<u8>,
+    Generic<CLK::T>: TryInto<Milliseconds>,
 {
     pub(crate) fn handle_socket_error<A: atat::AtatResp, F: Fn() -> Result<A, Error>>(
         &self,
@@ -57,20 +59,12 @@ where
             Err(e @ Error::AT(atat::Error::InvalidResponse)) => {
                 // Close socket upon reciving invalid response
                 if let Some(handle) = socket {
+                    defmt::error!("Closing socket upon invalid response. {}", handle);
                     let mut sockets = self.sockets.try_borrow_mut()?;
-                    let indicator = SocketIndicator::Handle(handle.0);
-                    match sockets.socket_type(indicator) {
-                        Some(SocketType::Tcp) => {
-                            let mut tcp = sockets.get::<TcpSocket<_,_>>(indicator)?;
-                            tcp.close();
-                        }
-                        Some(SocketType::Udp) => {
-                            let mut udp = sockets.get::<UdpSocket<_,_>>(indicator)?;
-                            udp.close();
-                        }
-                        None => {}
-                    }
-                    sockets.remove(indicator)?;
+                    self.send_at(ClosePeerConnection {
+                        peer_handle: handle.0,
+                    }).ok();
+                    sockets.remove(SocketIndicator::Handle(handle.0))?;
                 }
                 Err(e)
             }
@@ -123,6 +117,7 @@ where
     CLK: Clock,
     N: ArrayLength<Option<Socket<L, CLK>>>,
     L: ArrayLength<u8>,
+    Generic<CLK::T>: TryInto<Milliseconds>,
 {
     type Error = Error;
 
@@ -156,13 +151,7 @@ where
     /// Selects a port number automatically and initializes for read/writing.
     fn connect(&self, socket: &mut Self::UdpSocket, remote: SocketAddr) -> Result<(), Self::Error> {
         defmt::debug!("[UDP] Connecting socket");
-        if let Some(ref con) = *self.wifi_connection.try_borrow()? {
-            if !self.initialized.get() || !con.is_connected() {
-                return Err(Error::Network);
-            }
-        } else {
-            return Err(Error::Network);
-        }
+        self.is_connected()?;
 
         {
             let mut url = String::<consts::U128>::from("udp://");
@@ -240,17 +229,7 @@ where
 
     /// Send a datagram to the remote host.
     fn send(&self, socket: &mut Self::UdpSocket, buffer: &[u8]) -> nb::Result<(), Self::Error> {
-        if let Some(ref con) = *self
-            .wifi_connection
-            .try_borrow()
-            .map_err(|e| nb::Error::Other(e.into()))?
-        {
-            if !self.initialized.get() || !con.is_connected() {
-                return Err(nb::Error::Other(Error::Network));
-            }
-        } else {
-            return Err(nb::Error::Other(Error::Network));
-        }
+        self.is_connected()?;
 
         let mut sockets = self
             .sockets
@@ -337,6 +316,7 @@ where
     CLK: Clock,
     N: ArrayLength<Option<Socket<L, CLK>>>,
     L: ArrayLength<u8>,
+    Generic<CLK::T>: TryInto<Milliseconds>,
 {
     type Error = Error;
 
@@ -347,13 +327,6 @@ where
     /// Open a new TCP socket to the given address and port. The socket starts in the unconnected state.
     fn socket(&self) -> Result<Self::TcpSocket, Self::Error> {
         defmt::debug!("[TCP] Opening socket");
-        if let Some(ref con) = *self.wifi_connection.try_borrow()? {
-            if !self.initialized.get() || !con.is_connected() {
-                return Err(Error::Network);
-            }
-        } else {
-            return Err(Error::Network);
-        }
         if let Ok(mut sockets) = self.sockets.try_borrow_mut() {
             if let Ok(h) = sockets.add(TcpSocket::new(0)) {
                 Ok(h)
@@ -374,18 +347,7 @@ where
         remote: SocketAddr,
     ) -> nb::Result<(), Self::Error> {
         defmt::debug!("[TCP] Connect socket: {:?}", socket.0);
-        if let Some(ref con) = *self
-            .wifi_connection
-            .try_borrow()
-            .map_err(|e| nb::Error::Other(e.into()))?
-        {
-            if !self.initialized.get() || !con.is_connected() {
-                return Err(nb::Error::Other(Error::Network));
-            }
-        } else {
-            return Err(nb::Error::Other(Error::Network));
-        }
-
+        self.is_connected()?;
         {
             let mut sockets = self.sockets.try_borrow_mut().map_err(Self::Error::from)?;
 
@@ -513,17 +475,7 @@ where
     /// Write to the stream. Returns the number of bytes written is returned
     /// (which may be less than `buffer.len()`), or an error.
     fn send(&self, socket: &mut Self::TcpSocket, buffer: &[u8]) -> nb::Result<usize, Self::Error> {
-        if let Some(ref con) = *self
-            .wifi_connection
-            .try_borrow()
-            .map_err(|e| nb::Error::Other(e.into()))?
-        {
-            if !self.initialized.get() || !con.is_connected() {
-                return Err(nb::Error::Other(Error::Network));
-            }
-        } else {
-            return Err(nb::Error::Other(Error::Network));
-        }
+        self.is_connected()?;
 
         let mut sockets = self
             .sockets
@@ -534,8 +486,8 @@ where
             .get::<TcpSocket<_,_>>(SocketIndicator::Handle(socket.0))
             .map_err(|e| nb::Error::Other(e.into()))?;
 
-        if !tcp.may_send() {
-            return Err(nb::Error::Other(Error::SocketClosed));
+        if !matches!(tcp.state(), TcpState::Connected) {
+            return Err(nb::Error::Other(Error::SocketNotConnected));
         }
 
         for chunk in buffer.chunks(EgressChunkSize::to_usize()) {
@@ -604,7 +556,7 @@ where
         // If the socket is not found it is already removed
         if let Some(ref mut tcp) = sockets.get::<TcpSocket<_,_>>(indicator).ok() {
             //If socket is not closed that means a connection excists which has to be closed
-            if tcp.state() != TcpState::Close {
+            if !matches!(tcp.state(), TcpState::ShutdownForWrite(_) | TcpState::Created) {
                 match self.handle_socket_error(
                     || {
                         self.send_at(ClosePeerConnection {
@@ -616,13 +568,9 @@ where
                 ) {
                     Err(Error::AT(atat::Error::InvalidResponse)) | Ok(_) => (),
                     Err(e) => return Err(e.into()),
-                }
-                tcp.close();
-            } else {
-                //No connection exists the socket should be removed from the set here
-                tcp.close();
-                sockets.remove(indicator)?;
+                };
             }
+            sockets.remove(indicator)?;
         }
         Ok(())
     }

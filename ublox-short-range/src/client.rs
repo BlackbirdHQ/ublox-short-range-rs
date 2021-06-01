@@ -13,9 +13,9 @@ use crate::{
     socket::{ChannelId, Socket, SocketType, TcpSocket, TcpState, UdpSocket, UdpState, SocketIndicator, SocketSet},
     wifi::connection::{NetworkState, WiFiState, WifiConnection},
 };
-use core::cell::{Cell, RefCell};
+use core::{convert::TryInto, cell::{Cell, RefCell}};
 use embedded_nal::{IpAddr, SocketAddr};
-use embedded_time::Clock;
+use embedded_time::{duration::*, Clock};
 use heapless::{consts, ArrayLength};
 
 #[macro_export]
@@ -77,6 +77,7 @@ where
     pub(crate) urc_attempts: Cell<u8>,
     pub(crate) max_urc_attempts: u8,
     pub(crate) security_credentials: Option<SecurityCredentials>,
+    pub(crate) timer: CLK,
 }
 
 impl<C, CLK, N, L> UbloxClient<C, CLK, N, L>
@@ -85,8 +86,9 @@ where
     CLK: Clock,
     N: ArrayLength<Option<Socket<L, CLK>>>,
     L: ArrayLength<u8>,
+    Generic<CLK::T>: TryInto<Milliseconds>,
 {
-    pub fn new(client: C, socket_set: &'static mut SocketSet<N, L, CLK>) -> Self {
+    pub fn new(client: C, timer : CLK, socket_set: &'static mut SocketSet<N, L, CLK>) -> Self {
         UbloxClient {
             initialized: Cell::new(false),
             serial_mode: Cell::new(SerialMode::Cmd),
@@ -97,6 +99,7 @@ where
             max_urc_attempts: 5,
             urc_attempts: Cell::new(0),
             security_credentials: None,
+            timer,
         }
     }
 
@@ -203,7 +206,7 @@ where
             })
     }
 
-    fn handle_urc(&self) -> Result<(), Error> {
+    fn handle_urc(&self) -> Result<(), Error>{
         self.client
             .try_borrow_mut()?
             .peek_urc_with::<EdmEvent, _>(|edm_urc| {
@@ -223,8 +226,10 @@ where
                                         Some(SocketType::Tcp) => {
                                             if let Ok(mut tcp) = sockets.get::<TcpSocket<_, _>>(indicator)
                                             {
-                                                tcp.close();
-                                                sockets.remove(indicator).ok();
+                                                let ts = self.timer
+                                                    .try_now()
+                                                    .unwrap();
+                                                tcp.closed_by_remote(ts);
                                             }
                                         }
                                         Some(SocketType::Udp) => {
@@ -500,5 +505,16 @@ where
         } else {
             self.send_internal(&cmd, true)
         }
+    }
+
+    pub fn is_connected(&self) -> Result<(), Error>{
+        if let Some(ref con) = *self.wifi_connection.try_borrow()? {
+            if !self.initialized.get() || !con.is_connected() {
+                return Err(Error::Network);
+            }
+        } else {
+            return Err(Error::Network);
+        }
+        Ok(())
     }
 }

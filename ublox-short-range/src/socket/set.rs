@@ -68,9 +68,14 @@ impl <'a> defmt::Format for SocketIndicator<'a> {
             SocketIndicator::Endpoint(e) => match e {
                 SocketAddr::V4(v4) => defmt::write!(
                     fmt,
-                    "Endpoint({}:{})",
+                    "Endpoint(v4:{}:{})",
                     <u32>::from(*v4.ip()), v4.port()
-                 ) 
+                ),
+                SocketAddr::V6(v6) => defmt::write!(
+                    fmt,
+                    "Endpoint(v6:{}:{})",
+                    <u128>::from(*v6.ip()), v6.port()
+                 )
             } ,
 
         };

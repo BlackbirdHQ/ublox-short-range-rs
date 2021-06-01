@@ -15,10 +15,8 @@ use crate::{
 };
 use atat::serde_at::CharVec;
 use atat::AtatClient;
-use embedded_time::Clock;
-
-// use core::convert::TryFrom;
-use core::convert::TryFrom;
+use core::convert::{TryInto, TryFrom};
+use embedded_time::{duration::{units::Milliseconds, Generic}, Clock};
 use heapless::{consts, ArrayLength, Vec};
 
 /// Wireless network connectivity functionality.
@@ -39,6 +37,7 @@ where
     CLK: Clock,
     N: ArrayLength<Option<Socket<L, CLK>>>,
     L: ArrayLength<u8>,
+    Generic<CLK::T>: TryInto<Milliseconds>,
 {
     /// Attempts to connect to a wireless network with the given connection options.
     fn connect(&self, options: ConnectionOptions) -> Result<(), WifiConnectionError> {
