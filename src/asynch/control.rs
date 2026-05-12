@@ -553,6 +553,17 @@ impl<'a, const INGRESS_BUF_SIZE: usize, const URC_CAPACITY: usize>
     pub async fn peek_join_sta(&self, options: ConnectionOptions<'_>) -> Result<(), Error> {
         self.state_ch.wait_for_initialized().await;
 
+        // Deactivate first. Reset and the subsequent +UWSC writes are illegal
+        // on an active station config and return ERROR; the module also
+        // documents Deactivate as a no-op when already inactive, so this is
+        // safe regardless of caller state.
+        let _ = (&self.at_client)
+            .send_retry(&ExecWifiStationAction {
+                config_id: CONFIG_ID,
+                action: WifiStationAction::Deactivate,
+            })
+            .await;
+
         (&self.at_client)
             .send_retry(&ExecWifiStationAction {
                 config_id: CONFIG_ID,
@@ -700,9 +711,23 @@ impl<'a, const INGRESS_BUF_SIZE: usize, const URC_CAPACITY: usize>
     }
 
     /// Leave the wifi and wait, with which we are currently associated.
+    ///
+    /// Sends `+UWSCA=<id>,Deactivate` so the module's hardware state matches
+    /// our intent; without this the module stays associated and any later
+    /// `+UWSCA=<id>,Reset` / `+UWSC` write in `peek_join_sta` returns ERROR.
+    /// Deactivate is documented to be a no-op when already inactive, so it is
+    /// always safe.
     pub async fn wait_leave(&self) -> Result<(), Error> {
         self.state_ch.wait_for_initialized().await;
         self.state_ch.set_should_connect(false);
+
+        let _ = (&self.at_client)
+            .send_retry(&ExecWifiStationAction {
+                config_id: CONFIG_ID,
+                action: WifiStationAction::Deactivate,
+            })
+            .await;
+
         self.state_ch.update_connection_with(|con| {
             con.reset();
         });
