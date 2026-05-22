@@ -233,6 +233,22 @@ impl<'a, const INGRESS_BUF_SIZE: usize, const URC_CAPACITY: usize>
         self.state_ch.link_state(None) == LinkState::Up
     }
 
+    /// Last observed IPv4 address. `None` when no address is assigned.
+    pub fn ipv4_addr(&self) -> Option<Ipv4Addr> {
+        self.state_ch.ipv4_addr(None)
+    }
+
+    /// Wait until the cached IPv4 address differs from `prev`, then return the
+    /// new value. Pass the result back as `prev` on the next call to wait for
+    /// the following change.
+    ///
+    /// Fires when DHCP hands out an address, when the IP changes (e.g. a
+    /// static IP is reconfigured upstream and the device picks up a new
+    /// lease), and on disconnects that clear the cached address.
+    pub async fn wait_for_ipv4_change(&self, prev: Option<Ipv4Addr>) -> Option<Ipv4Addr> {
+        self.state_ch.wait_for_ipv4_change(prev).await
+    }
+
     pub async fn config_v4(&self) -> Result<Option<StaticConfigV4>, Error> {
         let NetworkStatusResponse {
             status: NetworkStatus::IPv4Address(ipv4),

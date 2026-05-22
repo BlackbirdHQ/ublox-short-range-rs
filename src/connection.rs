@@ -35,6 +35,9 @@ pub struct WifiConnection {
     pub wifi_state: WiFiState,
     pub ipv6_link_local_up: bool,
     pub ipv4_up: bool,
+    /// Last observed IPv4 address. `None` when no address is assigned
+    /// (link down, or DHCP has not yet handed out an address).
+    pub ipv4_addr: Option<Ipv4Addr>,
     #[cfg(feature = "ipv6")]
     pub ipv6_up: bool,
     pub network: Option<WifiNetwork>,
@@ -47,6 +50,7 @@ impl WifiConnection {
             ipv6_link_local_up: false,
             network: None,
             ipv4_up: false,
+            ipv4_addr: None,
             #[cfg(feature = "ipv6")]
             ipv6_up: false,
         }
@@ -91,6 +95,7 @@ impl WifiConnection {
         self.ipv6_link_local_up = false;
         self.network = None;
         self.ipv4_up = false;
+        self.ipv4_addr = None;
         #[cfg(feature = "ipv6")]
         {
             self.ipv6_up = false;
