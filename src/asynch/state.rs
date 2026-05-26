@@ -2,6 +2,7 @@
 
 use core::cell::RefCell;
 use core::future::poll_fn;
+use core::net::Ipv4Addr;
 use core::task::{Context, Poll};
 
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
@@ -187,6 +188,31 @@ impl<'d> Runner<'d> {
                 return Poll::Ready(());
             }
             Poll::Pending
+        })
+        .await
+    }
+
+    pub(crate) fn ipv4_addr(&self, cx: Option<&mut Context>) -> Option<Ipv4Addr> {
+        self.shared.lock(|s| {
+            let s = &mut *s.borrow_mut();
+            if let Some(cx) = cx {
+                s.connection_waker.register(cx.waker());
+            }
+            s.wifi_connection.ipv4_addr
+        })
+    }
+
+    /// Wait until the cached IPv4 address differs from `prev`, then return the
+    /// new value. Edge-triggered: callers pass the last value they observed and
+    /// re-arm the wait with the returned value.
+    pub(crate) async fn wait_for_ipv4_change(&self, prev: Option<Ipv4Addr>) -> Option<Ipv4Addr> {
+        poll_fn(|cx| {
+            let cur = self.ipv4_addr(Some(cx));
+            if cur != prev {
+                Poll::Ready(cur)
+            } else {
+                Poll::Pending
+            }
         })
         .await
     }

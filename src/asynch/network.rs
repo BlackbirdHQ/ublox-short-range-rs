@@ -102,6 +102,7 @@ where
                         DisconnectReason::NetworkDisabled => {
                             con.network.take();
                             con.ipv4_up = false;
+                            con.ipv4_addr = None;
                             con.ipv6_link_local_up = false;
                             warn!("Wifi network disabled!");
                             WiFiState::Inactive
@@ -190,11 +191,11 @@ where
             core::str::from_utf8(&ipv4).ok()
         );
 
-        let ipv4_up = core::str::from_utf8(ipv4.as_slice())
+        let ipv4_addr = core::str::from_utf8(ipv4.as_slice())
             .ok()
             .and_then(|s| Ipv4Addr::from_str(s).ok())
-            .map(|ip| !ip.is_unspecified())
-            .unwrap_or_default();
+            .filter(|ip| !ip.is_unspecified());
+        let ipv4_up = ipv4_addr.is_some();
         debug!("Network status callback ipv4: {:?}", ipv4_up);
 
         #[cfg(feature = "ipv6")]
@@ -250,6 +251,7 @@ where
         self.ch.update_connection_with(|con| {
             con.ipv6_link_local_up = ipv6_link_local_up;
             con.ipv4_up = ipv4_up;
+            con.ipv4_addr = ipv4_addr;
 
             #[cfg(feature = "ipv6")]
             {
