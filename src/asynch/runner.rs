@@ -28,9 +28,7 @@ use atat::asynch::SimpleClient;
 use atat::{asynch::AtatClient as _, AtatIngress as _, UrcChannel};
 use embassy_futures::select::Either;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
-#[cfg(feature = "ppp")]
-use embassy_time::Duration;
-use embassy_time::Timer;
+use embassy_time::{Duration, Timer};
 use embedded_io_async::{BufRead, Write};
 
 #[cfg(feature = "ppp")]
@@ -273,6 +271,7 @@ where
         }
 
         if !found_baudrate {
+            warn!("WiFi module did not answer at any baud rate in the table");
             return Err(Error::BaudDetection);
         }
 
@@ -337,12 +336,72 @@ where
         Ok(())
     }
 
+    /// Consecutive whole-table probe failures before the module is declared
+    /// unreachable.
+    ///
+    /// A carousel that is going to recover does so within about three passes --
+    /// the worst *recovering* case seen in CI was 43 probes, i.e. it failed two
+    /// full passes and succeeded partway through the third. Anything past that
+    /// has never come back on its own.
+    const MUTE_PASSES: u32 = 3;
+
+    /// How long to wait between probe attempts once the module is declared
+    /// unreachable.
+    ///
+    /// Retrying is kept alive rather than abandoned, because the task cannot
+    /// return -- but at a cadence that stops it churning the UART and drowning
+    /// the log for the rest of the session.
+    const MUTE_BACKOFF: Duration = Duration::from_secs(30);
+
+    /// Pause between probe passes before the module is declared unreachable.
+    ///
+    /// Small, but deliberately never zero: a full pass normally spends ~80s in
+    /// `wait_startup`, yet nothing guarantees `init()` awaits on every error
+    /// path. Without a yield here, one that returns synchronously would spin
+    /// the executor instead of retrying.
+    const RETRY_PAUSE: Duration = Duration::from_millis(500);
+
+    /// Log the diagnosis for a failed probe pass.
+    ///
+    /// Worth being explicit in the log: on this hardware the reset line is the
+    /// *only* control the MCU has over the module -- there is no power-enable --
+    /// so once it stops answering, no amount of retrying here can recover it.
+    /// Saying so turns a silent carousel into a diagnosis.
+    fn report_probe_failure(passes: u32) {
+        if passes < Self::MUTE_PASSES {
+            warn!(
+                "WiFi module probe pass {}/{} failed; retrying",
+                passes,
+                Self::MUTE_PASSES
+            );
+        } else {
+            error!(
+                "WiFi module UNRESPONSIVE after {} full baud-table passes. The reset \
+                 line is the only control available, and it has not revived the module, \
+                 so this cannot be recovered in firmware -- the board needs a power \
+                 cycle. Backing off to {}s between attempts.",
+                passes,
+                Self::MUTE_BACKOFF.as_secs()
+            );
+        }
+    }
+
     #[cfg(feature = "internal-network-stack")]
     pub async fn run(&mut self) -> ! {
+        let mut failed_passes = 0u32;
         loop {
             if self.init().await.is_err() {
+                failed_passes += 1;
+                Self::report_probe_failure(failed_passes);
+                Timer::after(if failed_passes >= Self::MUTE_PASSES {
+                    Self::MUTE_BACKOFF
+                } else {
+                    Self::RETRY_PAUSE
+                })
+                .await;
                 continue;
             }
+            failed_passes = 0;
 
             embassy_futures::select::select(
                 NetDevice::new(
@@ -360,10 +419,20 @@ where
 
     #[cfg(feature = "ppp")]
     pub async fn run(&mut self, stack: embassy_net::Stack<'_>) -> ! {
+        let mut failed_passes = 0u32;
         loop {
             if self.init().await.is_err() {
+                failed_passes += 1;
+                Self::report_probe_failure(failed_passes);
+                Timer::after(if failed_passes >= Self::MUTE_PASSES {
+                    Self::MUTE_BACKOFF
+                } else {
+                    Self::RETRY_PAUSE
+                })
+                .await;
                 continue;
             }
+            failed_passes = 0;
 
             debug!("Done initializing WiFi module");
 
