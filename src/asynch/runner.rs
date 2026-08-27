@@ -4,8 +4,11 @@ use crate::{
     command::{
         general::SoftwareVersion,
         system::{
-            types::{BaudRate, ChangeAfterConfirm, EchoOn, FlowControl, Parity, StopBits},
-            SetEcho, SetRS232Settings,
+            types::{
+                BaudRate, ChangeAfterConfirm, EchoOn, FlowControl, ModuleStartMode, Parity,
+                StopBits,
+            },
+            ModuleStart, SetEcho, SetRS232Settings,
         },
         wifi::{
             types::{PowerSaveMode, WifiConfig as WifiConfigParam},
@@ -29,7 +32,7 @@ use atat::{asynch::AtatClient as _, AtatIngress as _, UrcChannel};
 use embassy_futures::select::Either;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
-use embedded_io_async::{BufRead, Write};
+use embedded_io_async::{BufRead, Read as _, Write};
 
 #[cfg(feature = "ppp")]
 pub(crate) const URC_SUBSCRIBERS: usize = 2;
@@ -283,6 +286,18 @@ where
             (&at_client)
                 .send_retry(&SetEcho { on: EchoOn::Off })
                 .await?;
+
+            // Pin the start mode to command mode. `+UMSM` is persistent, and a
+            // module that came up in data or PPP mode would answer nothing on
+            // the AT interface at any baud rate -- indistinguishable from dead
+            // hardware, and unrecoverable here since the reset line is the only
+            // control available. Nothing in this driver ever sets it, so its
+            // value is whatever was last stored; assert it rather than trust it.
+            (&at_client)
+                .send_retry(&ModuleStart {
+                    mode: ModuleStartMode::CommandMode,
+                })
+                .await?;
             (&at_client)
                 .send_retry(&SetWifiConfig {
                     config_param: WifiConfigParam::DropNetworkOnLinkLoss(OnOff::On),
@@ -415,6 +430,63 @@ where
             )
             .await;
         }
+    }
+
+    /// End the PPP session so the line is idle before `init()` resets the module.
+    ///
+    /// Dropping the PPP future stops the *host* driving the link but never tells
+    /// the module anything, so it keeps framing HDLC and the reset lands
+    /// mid-frame -- CI caught one 0.7ms after PPP bytes were still arriving,
+    /// after which the module went silent across 35 resets and two full
+    /// baud-table passes.
+    ///
+    /// This does **not** return the module to command mode, and nothing can:
+    /// the manual lists only the escape sequence and a DTR transition, DTR is
+    /// not wired on this hardware, and the ODIN-W2 ignores `+++` in PPP mode
+    /// (measured -- with the session terminated and the line quiet for 1.2s it
+    /// still answers nothing, and a following `AT` gets no reply). The reset is
+    /// genuinely the only way out. What this buys is that the reset arrives
+    /// while the module is idle rather than mid-transmission.
+    ///
+    /// `ppproto` can only answer a peer's Terminate-Request, never initiate one
+    /// (`_send_terminate_request` is dead code), so the frame is emitted
+    /// directly. It is fixed apart from the identifier:
+    ///
+    ///   7E FF 03 C0 21 05 01 00 04 3D C7 7E
+    ///   |  |     |     |  |  |     |     `- flag
+    ///   |  |     |     |  |  |     `------- FCS-16
+    ///   |  |     |     |  |  `------------- length 4
+    ///   |  |     |     |  `---------------- identifier
+    ///   |  |     |     `------------------- code 5 = Terminate-Request
+    ///   |  |     `------------------------- protocol C021 = LCP
+    ///   |  `------------------------------- address / control
+    ///   `---------------------------------- flag
+    ///
+    /// The module answers Terminate-Ack and stops transmitting. Best-effort: if
+    /// it is already quiet or already wedged this is inert, and we reset anyway.
+    #[cfg(feature = "ppp")]
+    async fn terminate_ppp(&mut self) {
+        const LCP_TERMINATE_REQ: [u8; 12] = [
+            0x7E, 0xFF, 0x03, 0xC0, 0x21, 0x05, 0x01, 0x00, 0x04, 0x3D, 0xC7, 0x7E,
+        ];
+        /// Cap on the drain, so a module that never stops talking cannot hold
+        /// the teardown open.
+        const MAX_DRAIN_READS: usize = 12;
+
+        debug!("Terminating PPP session so the module is idle before reset");
+        let (mut tx, mut rx) = self.transport.split_ref();
+        let _ = tx.write_all(&LCP_TERMINATE_REQ).await;
+
+        // Drain until the line goes quiet -- that quiet is the whole point.
+        let mut buf = [0u8; 32];
+        let mut drained = 0usize;
+        for _ in 0..MAX_DRAIN_READS {
+            match embassy_time::with_timeout(Duration::from_millis(250), rx.read(&mut buf)).await {
+                Ok(Ok(n)) if n > 0 => drained += n,
+                _ => break,
+            }
+        }
+        debug!("PPP terminated, drained {} bytes; line idle", drained);
     }
 
     #[cfg(feature = "ppp")]
@@ -557,6 +629,11 @@ where
             };
 
             embassy_futures::select::select(device_fut, network_fut).await;
+
+            // The session is over and the PPP future has been dropped, so the
+            // host has stopped driving the link -- but the module has not been
+            // told. End the session properly before `init()` resets it.
+            self.terminate_ppp().await;
         }
     }
 }
